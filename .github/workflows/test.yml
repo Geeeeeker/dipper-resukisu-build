@@ -1,4 +1,4 @@
-name: Build ReSukiSU kernel for Xiaomi Mi 8 (dipper, Android 11, Linux 4.9)
+name: Build ReSukiSU kernel for Xiaomi Mix2S (polaris, Android 11, Linux 4.9)
 
 # 产出两个可刷入内核包（AnyKernel3）：
 #   - dipper-resukisu-nosusfs : 手动钩子模式，不含 SUSFS
@@ -49,7 +49,7 @@ jobs:
       CROSS_COMPILE_ARM32: arm-linux-gnueabi-
       KERNEL_REPO: ${{ github.event.inputs.kernel_repo || 'https://github.com/Geeeeeker/android_kernel_xiaomi_sdm845.git' }}
       KERNEL_BRANCH: ${{ github.event.inputs.kernel_branch || 'lineage-18.1' }}
-      DEFCONFIG: ${{ github.event.inputs.kernel_defconfig || 'dipper-mi845_defconfig' }}
+      DEFCONFIG: ${{ github.event.inputs.kernel_defconfig || 'polaris-mi845_defconfig' }}
     steps:
       - name: Checkout build scripts
         uses: actions/checkout@v4
@@ -148,10 +148,10 @@ jobs:
           split_boot
           flash_boot
           EOF
-          zip -r9 "../dipper-resukisu-${{ matrix.variant }}.zip" * -x .git README.md '*placeholder' || \
-          zip -r9 "../dipper-resukisu-${{ matrix.variant }}.zip" .
+          zip -r9 "../polaris-resukisu-${{ matrix.variant }}.zip" * -x .git README.md '*placeholder' || \
+          zip -r9 "../polaris-resukisu-${{ matrix.variant }}.zip" .
           cd ..
-          ls -la dipper-resukisu-${{ matrix.variant }}.zip
+          ls -la polaris-resukisu-${{ matrix.variant }}.zip
 
       # 注意：Actions 的 artifact 会占用账号的 Actions 存储配额（免费 500MB，默认保留 90 天）。
       # 这里只传 22MB 的可刷包、保留 1 天；长期下载走下面的 Release 资产（公开仓库的 Release 资产
@@ -159,8 +159,8 @@ jobs:
       - name: Upload artifact (short retention)
         uses: actions/upload-artifact@v4
         with:
-          name: dipper-resukisu-${{ matrix.variant }}
-          path: dipper-resukisu-${{ matrix.variant }}.zip
+          name: polaris-resukisu-${{ matrix.variant }}
+          path: polaris-resukisu-${{ matrix.variant }}.zip
           retention-days: 1
           compression-level: 0   # 已是 zip，别再压一遍
 
@@ -173,7 +173,7 @@ jobs:
           name: "dipper ReSukiSU build (${{ matrix.variant }})"
           prerelease: true
           overwrite_files: true
-          files: dipper-resukisu-${{ matrix.variant }}.zip
+          files: polaris-resukisu-${{ matrix.variant }}.zip
           body: |
             Xiaomi Mi 8 (dipper) / Android 10 / Linux 4.9
             kernel: ${{ env.KERNEL_BRANCH }} @ ${{ env.kernel_commit }}
