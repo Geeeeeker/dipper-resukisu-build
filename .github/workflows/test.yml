@@ -138,7 +138,7 @@ jobs:
           do.cleanup=1
           do.cleanuponabort=1
           device.name1=polaris
-          device.name2=Mi 8
+          device.name2=Mix 2S
           '; }
           block=auto
           is_slot_device=auto
