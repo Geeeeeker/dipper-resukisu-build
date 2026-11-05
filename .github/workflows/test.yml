@@ -101,6 +101,27 @@ jobs:
           # 清理临时目录
           rm -rf rtl8188eus-repo
 
+          # 进入驱动目录，修复 cfg80211_roamed API 不兼容问题（高版本内核需要）
+          cd drivers/rtl8188eus
+          if [ -f os_dep/linux/ioctl_cfg80211.c ]; then
+            sed -i '/^#else$/,/^#endif \/\*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)\*\// {
+              /cfg80211_roamed(padapter->pnetdev/ {
+                :a
+                N
+                /);/!ba
+                s/.*cfg80211_roamed.*\n.*\n.*\n.*\n.*\n.*\n.*\n.*);/\
+          \t\tstruct cfg80211_roam_info roam_info = {\
+          \t\t\t.bssid = cur_network->network.MacAddress,\
+          \t\t\t.req_ie = pmlmepriv->assoc_req + sizeof(struct rtw_ieee80211_hdr_3addr) + 2,\
+          \t\t\t.req_ie_len = pmlmepriv->assoc_req_len - sizeof(struct rtw_ieee80211_hdr_3addr) - 2,\
+          \t\t\t.resp_ie = pmlmepriv->assoc_rsp + sizeof(struct rtw_ieee80211_hdr_3addr) + 6,\
+          \t\t\t.resp_ie_len = pmlmepriv->assoc_rsp_len - sizeof(struct rtw_ieee80211_hdr_3addr) - 6,\
+          \t\t};\
+          \t\tcfg80211_roamed(padapter->pnetdev, \&roam_info, GFP_ATOMIC);/
+              }
+            }' os_dep/linux/ioctl_cfg80211.c
+          fi
+
       - name: Configure kernel
         run: |
           cd kernel
