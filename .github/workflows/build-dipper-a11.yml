@@ -1,0 +1,333 @@
+name: Build ReSukiSU kernel for Xiaomi Mix2S (polaris, Android 11, Linux 4.9)
+
+# 产出两个可刷入内核包（AnyKernel3）：
+#   - dipper-resukisu-nosusfs : 手动钩子模式，不含 SUSFS
+#   - dipper-resukisu-susfs   : SUSFS 内联钩子模式，含 SUSFS
+#
+# 用法：把本目录推到自己的 GitHub 仓库，Actions 里手动 Run workflow。
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "构建哪个变体"
+        type: choice
+        options: [both, nosusfs, susfs]
+        default: both
+        required: true
+      kernel_repo:
+        description: "内核源码仓库"
+        default: "https://github.com/Geeeeeker/android_kernel_xiaomi_sdm845.git"
+        required: true
+      kernel_branch:
+        description: "内核分支（Android 11 官方开源树 = dipper-r-oss, 4.9.186）"
+        default: "lineage-18.1"
+        required: true
+      kernel_defconfig:
+        description: "defconfig"
+        default: "dipper-mi845_defconfig"
+        required: true
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.variant }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # 手动触发且指定了单一变体时只跑那个（job 级 if 不能引用 matrix，所以用动态 matrix）
+        variant: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.variant != 'both') && fromJSON(format('["{0}"]', github.event.inputs.variant)) || fromJSON('["nosusfs","susfs"]') }}
+    env:
+      ARCH: arm64
+      CROSS_COMPILE: aarch64-linux-gnu-
+      CROSS_COMPILE_ARM32: arm-linux-gnueabi-
+      KERNEL_REPO: ${{ github.event.inputs.kernel_repo || 'https://github.com/Geeeeeker/android_kernel_xiaomi_sdm845.git' }}
+      KERNEL_BRANCH: ${{ github.event.inputs.kernel_branch || 'lineage-18.1' }}
+      DEFCONFIG: ${{ github.event.inputs.kernel_defconfig || 'dipper-mi845_defconfig' }}
+    steps:
+      - name: Checkout build scripts
+        uses: actions/checkout@v4
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git flex bison bc cpio zip unzip rsync libssl-dev libelf-dev \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi python3 make
+      - name: Clone kernel source
+        run: |
+          git clone --depth=1 --single-branch -b "$KERNEL_BRANCH" "$KERNEL_REPO" kernel
+          echo "kernel_commit=$(git -C kernel rev-parse HEAD)" >> "$GITHUB_ENV"
+          head -4 kernel/Makefile
+      - name: Clone ReSukiSU (BakaSU)
+        run: |
+          # ReSukiSU/ReSukiSU 已更名为 Baka-SU/BakaSU（301 重定向）
+          git clone https://github.com/Baka-SU/BakaSU kernel/KernelSU
+          echo "ksu_commit=$(git -C kernel/KernelSU rev-parse HEAD)" >> "$GITHUB_ENV"
+          git -C kernel/KernelSU log -1 --format='%h %ad %s' --date=short
+      # ---------- 不含 SUSFS：手动钩子模式（已本地验证） ----------
+      - name: Integrate KernelSU (manual hook, no SUSFS)
+        if: matrix.variant == 'nosusfs'
+        run: python3 scripts/integrate_ksu.py kernel
+
+      # ---------- 含 SUSFS：SUSFS v2.3.0 内核补丁 + 官方 inline hook 注入 ----------
+      - name: Integrate SUSFS + KernelSU inline hook
+        if: matrix.variant == 'susfs'
+        run: bash scripts/integrate_susfs.sh kernel
+
+      # ---------- 编译前：集成 RTL8188EU 驱动（编译进内核） ----------
+      - name: 集成 RTL8188EU 驱动 (编译进内核)
+        working-directory: kernel
+        run: |
+          # 克隆指定的驱动仓库
+          git clone --depth=1 --branch master https://github.com/Geeeeeker/android_kernel_xiaomi_sdm845.git rtl8188eus-repo
+          # 复制驱动源码到内核树
+          cp -r rtl8188eus-repo/drivers/rtl8188eus drivers/
+          # 修改顶层 Makefile 与 Kconfig，使驱动参与编译
+          echo 'obj-$(CONFIG_RTL8188EU) += rtl8188eus/' >> drivers/Makefile
+          echo 'source "drivers/rtl8188eus/Kconfig"' >> drivers/Kconfig
+          # 清理临时目录
+          rm -rf rtl8188eus-repo
+          # 进入驱动目录，修复 cfg80211_roamed API 不兼容问题（高版本内核需要）
+          cd drivers/rtl8188eus
+          if [ -f os_dep/linux/ioctl_cfg80211.c ]; then
+            sed -i '/^#else$/,/^#endif \/\*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)\*\// {
+              /cfg80211_roamed(padapter->pnetdev/ {
+                :a
+                N
+                /);/!ba
+                s/.*cfg80211_roamed.*\n.*\n.*\n.*\n.*\n.*\n.*\n.*);/\
+          \t\tstruct cfg80211_roam_info roam_info = {\
+          \t\t\t.bssid = cur_network->network.MacAddress,\
+          \t\t\t.req_ie = pmlmepriv->assoc_req + sizeof(struct rtw_ieee80211_hdr_3addr) + 2,\
+          \t\t\t.req_ie_len = pmlmepriv->assoc_req_len - sizeof(struct rtw_ieee80211_hdr_3addr) - 2,\
+          \t\t\t.resp_ie = pmlmepriv->assoc_rsp + sizeof(struct rtw_ieee80211_hdr_3addr) + 6,\
+          \t\t\t.resp_ie_len = pmlmepriv->assoc_rsp_len - sizeof(struct rtw_ieee80211_hdr_3addr) - 6,\
+          \t\t};\
+          \t\tcfg80211_roamed(padapter->pnetdev, \&roam_info, GFP_ATOMIC);/
+              }
+            }' os_dep/linux/ioctl_cfg80211.c
+          fi
+      - name: Configure kernel
+        run: |
+          cd kernel
+          scripts/config --file .config 2>/dev/null || true
+          make O=out "$DEFCONFIG"
+          SC="scripts/config --file out/.config"
+          $SC --enable KSU
+          $SC --enable KALLSYMS
+          $SC --enable KALLSYMS_ALL
+          $SC --disable KSU_TRACEPOINT_HOOK
+          $SC --disable COMPAT_VDSO
+          # RTL8188EU 编进内核
+          $SC --enable RTL8188EU
+          if [ "${{ matrix.variant }}" = "susfs" ]; then
+            $SC --disable KSU_MANUAL_HOOK
+            $SC --enable KSU_SUSFS
+            for o in SUS_PATH SUS_MOUNT SUS_KSTAT SPOOF_UNAME ENABLE_LOG \
+                     HIDE_KSU_SUSFS_SYMBOLS SPOOF_CMDLINE_OR_BOOTCONFIG OPEN_REDIRECT SUS_MAP; do
+              $SC --enable "KSU_SUSFS_$o"
+            done
+          else
+            $SC --disable KSU_SUSFS
+            $SC --enable KSU_MANUAL_HOOK
+            $SC --enable KSU_MANUAL_HOOK_AUTO_SETUID_HOOK
+            $SC --enable KSU_MANUAL_HOOK_AUTO_INITRC_HOOK
+            $SC --enable KSU_MANUAL_HOOK_AUTO_INPUT_HOOK
+          fi
+          make O=out olddefconfig
+          grep -E '^CONFIG_(KSU|KSU_MANUAL_HOOK|KSU_SUSFS|KALLSYMS_ALL|RTL8188EU)' out/.config | sort
+      - name: Build kernel
+        run: |
+          cd kernel
+          # CC 覆盖：小米 CAF 树的 Makefile:364 用 scripts/gcc-wrapper.py 包装 CC（依赖 python2），CI 上无 python2
+          make O=out -j"$(nproc)" \
+               CC="${CROSS_COMPILE}gcc" \
+               KCFLAGS="-Wno-error" HOSTCFLAGS="-fcommon"
+          ls -la out/arch/arm64/boot/
+      # ---------- 编译后：USB/IP 内核模块与用户态工具 ----------
+      - name: 🔌 Build USB/IP modules and userspace tools
+        run: |
+          set -euo pipefail
+          KERNEL_DIR=${KERNEL_DIR:?KERNEL_DIR must be set}
+          ROOT=${GITHUB_WORKSPACE:-$(cd "${KERNEL_DIR}/.." && pwd)}
+          ARCH=${ARCH:-arm64}
+          # ========== 设置 QEMU 用户态支持 (用于 arm64 容器) ==========
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static binfmt-support
+          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+          # ========== 编译 USB/IP 内核模块（可选） ==========
+          cd "$KERNEL_DIR"
+          export SHELL=/bin/bash
+          # 确保 USB/IP 相关配置为模块（不影响已编译的内核镜像）
+          SC="scripts/config --file out/.config"
+          $SC --module USBIP_CORE
+          $SC --module USBIP_VHCI_HCD
+          $SC --module USBIP_HOST
+          make O=out ARCH=arm64 olddefconfig
+          make -j"$(nproc)" \
+            SHELL=/bin/bash \
+            ARCH=arm64 \
+            O=out \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CC="${CROSS_COMPILE}gcc" \
+            KCFLAGS="-Wno-error" HOSTCFLAGS="-fcommon" \
+            M=drivers/usb/usbip \
+            modules || echo "Warning: USB/IP modules build skipped or failed."
+          mkdir -p "$ROOT/usbip-out/modules"
+          if ls out/drivers/usb/usbip/*.ko 1> /dev/null 2>&1; then
+              cp out/drivers/usb/usbip/*.ko "$ROOT/usbip-out/modules/"
+          else
+              echo "No USB/IP kernel modules generated (probably built-in)."
+          fi
+          # ========== 编译 USB/IP 用户态工具 (Docker arm64 容器) ==========
+          mkdir -p "$ROOT/usbip-out/bin" "$ROOT/usbip-out/libs"
+          kernel_rel="${KERNEL_DIR#"$ROOT"/}"
+          [ "$kernel_rel" = "$KERNEL_DIR" ] && kernel_rel="$(basename "$KERNEL_DIR")"
+          docker run --rm --platform linux/arm64 \
+            --memory=3g \
+            -v "$ROOT:/workspace" \
+            -v "$ROOT/usbip-out:/output" \
+            -w "/workspace/$kernel_rel" \
+            arm64v8/ubuntu:22.04 \
+            bash -c "
+              set -e
+              export DEBIAN_FRONTEND=noninteractive
+              ulimit -s unlimited
+              apt update
+              apt install -y \
+                build-essential \
+                autoconf \
+                libtool \
+                pkg-config \
+                libudev-dev \
+                libssl-dev \
+                flex \
+                bison \
+                file \
+                patchelf
+              cd tools/usb/usbip
+              ./autogen.sh
+              ./configure CFLAGS=\"-Wno-error -Wno-error=stringop-truncation\" --with-tcp-wrappers=no
+              make -j1
+              cp src/.libs/usbip /output/bin/
+              cp src/.libs/usbipd /output/bin/
+              cp libsrc/.libs/libusbip.so.0* /output/libs/
+              cd /output
+              BINARIES=\"bin/usbip bin/usbipd libs/libusbip.so.0*\"
+              DEPS=\"\"
+              for file in \$BINARIES; do
+                if [ -f \"\$file\" ]; then
+                  needed=\$(readelf -d \"\$file\" | grep NEEDED | awk '{print \$5}' | tr -d '[]' || true)
+                  for lib in \$needed; do
+                    if [[ \"\$DEPS\" != *\"\$lib\"* ]]; then
+                      DEPS=\"\$DEPS \$lib\"
+                    fi
+                  done
+                fi
+              done
+              for lib in \$(echo \$DEPS | tr ' ' '\\n' | sort -u); do
+                libpath=\$(ldconfig -p | grep \"\$lib (\" | head -1 | awk '{print \$NF}' || true)
+                if [ -z \"\$libpath\" ]; then
+                  libpath=\$(find /lib /usr/lib -name \"\$lib\" -type f 2>/dev/null | head -1 || true)
+                fi
+                if [ -n \"\$libpath\" ]; then
+                  cp -P \"\$libpath\" libs/ 2>/dev/null || cp \"\$libpath\" libs/
+                  for reallib in \$(find \"\$(dirname \"\$libpath\")\" -name \"\${lib%.so*}*\" -type f 2>/dev/null); do
+                    cp -n \"\$reallib\" libs/ 2>/dev/null || true
+                  done
+                fi
+              done
+              ld_linux=\"/lib/ld-linux-aarch64.so.1\"
+              if [ -f \"\$ld_linux\" ]; then
+                cp -P \"\$ld_linux\" libs/
+              fi
+            "
+          # ========== 打包 USB/IP 产物 ==========
+          cd "$ROOT/usbip-out"
+          tar czf "$ROOT/usbip-arm64-bundle.tar.gz" .
+        env:
+          KERNEL_DIR: ${{ github.workspace }}/kernel
+          ARCH: arm64
+
+      - name: Upload USB/IP bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: usbip-arm64-bundle-${{ matrix.variant }}
+          path: ${{ github.workspace }}/usbip-arm64-bundle.tar.gz
+          if-no-files-found: error
+
+      - name: Package AnyKernel3
+        run: |
+          curl -Lo ak3.zip https://github.com/osm0sis/AnyKernel3/archive/refs/heads/master.zip
+          unzip -q ak3.zip
+          mv AnyKernel3-master AnyKernel3
+          cd AnyKernel3
+          rm -rf .git* README.md *placeholder
+          cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
+          [ -f ../kernel/out/arch/arm64/boot/dtbo.img ] && cp ../kernel/out/arch/arm64/boot/dtbo.img . || true
+          cat > anykernel.sh <<'EOF'
+          properties() { '
+          kernel.string=ReSukiSU kernel for Xiaomi Mix2S (polaris)
+          do.devicecheck=1
+          do.modules=0
+          do.cleanup=1
+          do.cleanuponabort=1
+          device.name1=polaris
+          device.name2=Mix 2S
+          '; }
+          block=auto
+          is_slot_device=auto
+          ramdisk_compression=auto
+          patch_vbmeta_flag=auto
+          . tools/ak3-core.sh
+          split_boot
+          flash_boot
+          EOF
+          zip -r9 "../polaris-resukisu-${{ matrix.variant }}.zip" * -x .git README.md '*placeholder' || \
+          zip -r9 "../polaris-resukisu-${{ matrix.variant }}.zip" .
+          cd ..
+          ls -la polaris-resukisu-${{ matrix.variant }}.zip
+      # 注意：Actions 的 artifact 会占用账号的 Actions 存储配额（免费 500MB，默认保留 90 天）。
+      # 这里只传 22MB 的可刷包、保留 1 天；长期下载走下面的 Release 资产（公开仓库的 Release 资产
+      # 不计入 Actions 存储）。
+      - name: Upload artifact (short retention)
+        uses: actions/upload-artifact@v4
+        with:
+          name: polaris-resukisu-${{ matrix.variant }}
+          path: polaris-resukisu-${{ matrix.variant }}.zip
+          retention-days: 1
+          compression-level: 0   # 已是 zip，别再压一遍
+
+      # 手动触发时把产物挂到固定 tag 的 Release 上：长期可用、不占 Actions 存储
+      - name: Publish to release (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-${{ matrix.variant }}
+          name: "polaris ReSukiSU build (${{ matrix.variant }})"
+          prerelease: true
+          overwrite_files: true
+          files: polaris-resukisu-${{ matrix.variant }}.zip
+          body: |
+            Xiaomi Mix2S (polaris) / Android 11 / Linux 4.9
+            kernel: ${{ env.KERNEL_BRANCH }} @ ${{ env.kernel_commit }}
+            ReSukiSU(BakaSU): ${{ env.ksu_commit }}
+            variant: ${{ matrix.variant }}
+            built: ${{ github.run_number }} @ ${{ github.sha }}
+      - name: Attach to release (tag push)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: polaris-resukisu-${{ matrix.variant }}.zip
+          body: |
+            Xiaomi Mix2S (polaris) / Android 11 / Linux 4.9
+            kernel: ${{ env.KERNEL_BRANCH }} @ ${{ env.kernel_commit }}
+            ReSukiSU(BakaSU): ${{ env.ksu_commit }}
+            variant: ${{ matrix.variant }}
