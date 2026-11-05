@@ -1,4 +1,4 @@
-name: Build ReSukiSU kernel for Xiaomi Mix2S (dipper, Android 11, Linux 4.9)
+name: Build ReSukiSU kernel for Xiaomi Mi 8 (dipper, Android 11, Linux 4.9)
 
 # 产出两个可刷入内核包（AnyKernel3）：
 #   - dipper-resukisu-nosusfs : 手动钩子模式，不含 SUSFS
