@@ -14,7 +14,7 @@ on:
         default: "https://github.com/Geeeeeker/android_kernel_xiaomi_sdm845.git"
         required: true
       kernel_branch:
-        description: "内核分支（Android 10 官方开源树 = polaris-q-oss, 4.9.186）"
+        description: "内核分支（Android 11 官方开源树 = polaris-r-oss, 4.9.186）"
         default: "lineage-18.1"
         required: true
       kernel_defconfig:
