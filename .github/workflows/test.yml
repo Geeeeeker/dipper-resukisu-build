@@ -1,8 +1,8 @@
 name: Build ReSukiSU kernel for Xiaomi Mix2S (polaris, Android 11, Linux 4.9)
 
 # 产出两个可刷入内核包（AnyKernel3）：
-#   - dipper-resukisu-nosusfs : 手动钩子模式，不含 SUSFS
-#   - dipper-resukisu-susfs   : SUSFS 内联钩子模式，含 SUSFS
+#   - polaris-resukisu-nosusfs : 手动钩子模式，不含 SUSFS
+#   - polaris-resukisu-susfs   : SUSFS 内联钩子模式，含 SUSFS
 #
 # 用法：把本目录推到自己的 GitHub 仓库，Actions 里手动 Run workflow。
 
@@ -20,12 +20,12 @@ on:
         default: "https://github.com/Geeeeeker/android_kernel_xiaomi_sdm845.git"
         required: true
       kernel_branch:
-        description: "内核分支（Android 10 官方开源树 = dipper-q-oss, 4.9.186）"
+        description: "内核分支（Android 10 官方开源树 = polaris-q-oss, 4.9.186）"
         default: "lineage-18.1"
         required: true
       kernel_defconfig:
         description: "defconfig"
-        default: "dipper-mi845_defconfig"
+        default: "polaris-mi845_defconfig"
         required: true
   push:
     tags:
@@ -132,12 +132,12 @@ jobs:
           [ -f ../kernel/out/arch/arm64/boot/dtbo.img ] && cp ../kernel/out/arch/arm64/boot/dtbo.img . || true
           cat > anykernel.sh <<'EOF'
           properties() { '
-          kernel.string=ReSukiSU kernel for Xiaomi Mi 8 (dipper)
+          kernel.string=ReSukiSU kernel for Xiaomi Mix2S (polaris)
           do.devicecheck=1
           do.modules=0
           do.cleanup=1
           do.cleanuponabort=1
-          device.name1=dipper
+          device.name1=polaris
           device.name2=Mi 8
           '; }
           block=auto
@@ -170,12 +170,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest-${{ matrix.variant }}
-          name: "dipper ReSukiSU build (${{ matrix.variant }})"
+          name: "polaris ReSukiSU build (${{ matrix.variant }})"
           prerelease: true
           overwrite_files: true
           files: polaris-resukisu-${{ matrix.variant }}.zip
           body: |
-            Xiaomi Mi 8 (dipper) / Android 10 / Linux 4.9
+            Xiaomi Mix2S (polaris) / Android 11 / Linux 4.9
             kernel: ${{ env.KERNEL_BRANCH }} @ ${{ env.kernel_commit }}
             ReSukiSU(BakaSU): ${{ env.ksu_commit }}
             variant: ${{ matrix.variant }}
@@ -185,9 +185,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dipper-resukisu-${{ matrix.variant }}.zip
+          files: polaris-resukisu-${{ matrix.variant }}.zip
           body: |
-            Xiaomi Mi 8 (dipper) / Android 10 / Linux 4.9
+            Xiaomi Mix2S (polaris) / Android 11 / Linux 4.9
             kernel: ${{ env.KERNEL_BRANCH }} @ ${{ env.kernel_commit }}
             ReSukiSU(BakaSU): ${{ env.ksu_commit }}
             variant: ${{ matrix.variant }}
